@@ -1,24 +1,32 @@
 pragma solidity ^0.4.24;
 
-import './SafeMath';
+import '../node_modules/openzeppelin-solidity/contracts/math/SafeMath.sol';
+import './dWart.sol';
 
 /*
 * @dev Legends of dWaria contract
-* Stores the players, matches and dWarriors
+* Stores the players, dMatches, dWarriors and dStages
 */
 contract dWaria {
 
-    address public beneficiary;
+    address public dBoss;
 
-    address[] public $dWarriors;
+    dWart public token;
+
+    address[] public $warriors;
     address[] public $players;
+    address[] public $stages;
+    address[] public $matches;
 
     mapping(address => Player) public players;
-    mapping(address => dWarrior) public dWarriors;
+    mapping(address => Warrior) public warriors;
+    mapping(address => Stage) public stages;
+    mapping(address => Match) public matches;
+
+    uint256 public price = 1;
 
     struct Player {
         address id;
-        string name;
         uint256 wins;
         uint256 losses;
         uint256 amountRaised;
@@ -27,24 +35,90 @@ contract dWaria {
         address[] matches;
     }
 
-    struct dWarrior {
+    struct Warrior {
+        address id;
+    }
+    
+    struct Stage {
+        address id;
+    }
+    
+    struct Match {
         address id;
     }
 
-    constructor() public {
-        beneficiary = msg.sender;
+    constructor(dWart _token) public {
+        token = _token;
+        dBoss = msg.sender;
     }
 
-    function() payable external {}
+    function() external {}
 
-    function registerPlayer() payable public {}
-    function registerDWarrior() public {}
-    function registerDMatch() payable public {}
+    function registerPlayer() public {
+        require(players[msg.sender].id == address(0));
+        require(token.balanceOf(msg.sender) >= price);
+        
+        token.transferFrom(msg.sender, dBoss, price);
+
+        players[msg.sender].id = msg.sender;
+        players[msg.sender].wins = 0;
+        players[msg.sender].losses = 0;
+        players[msg.sender].amountRaised = 0; 
+        players[msg.sender].amountLost = 0;
+
+        $players.push(msg.sender);
+    }
+
+    function registerDWarrior(dWarrior _warrior) public {
+        require(warriors[_warrior].id == address(0));
+        warriors[_warrior].id = _warrior;
+        $warriors.push(_warrior);
+    }
+
+    function registerDStage(dStage _stage) public {
+        require(stages[_stage].id == address(0));
+        stages[_stage].id = _stage;
+        $stages.push(_stage);
+    }
+
+    function registerDMatch(dMatch _match) public {
+        require(matches[_match].id == address(0));
+        require(token.balanceOf(msg.sender) >= price);
+        
+        token.transferFrom(msg.sender, dBoss, price);
+
+        matches[_match].id = _match;
+        $matches.push(_match);
+    }
 }
 
+/*
+* @dev a dWaria dMatch
+* It is a match between 2 registered players
+* Any registered player can create a match
+* a match is initialized by sending a bet in dWart tokens
+*/
 contract dMatch {
 
-    use SafeMath for uint256;
+    using SafeMath for uint256;
+
+    modifier onlyDWaria() {
+        require(msg.sender == address(parent));
+        _;
+    }
+    
+    modifier pendingOponent() {
+        require(state == State.pendingOponent);
+        _;
+    }
+    
+    modifier pendingWinner() {
+        require(state == State.pendingWinner);
+        _;
+    }
+
+    dWaria public parent;
+    dWart public token;
 
     address public player1;
     address public player2;
@@ -52,15 +126,26 @@ contract dMatch {
     address public winner;
     address public loser;
 
+    dStage public stage;
+
+    uint256 public roundCount = 2;
+    uint256 public round = 0;
+    mapping(uint256 => Round) public rounds; 
+
     struct Player {
-        address dWarrior;
+        address warrior;
         uint256 damage;
         uint256 points;
     }
 
+    struct Round {
+        address winner;
+        address loser;
+    }
+
     enum State {
         pendingOponent,
-        pendingWinnner,
+        pendingWinner,
         won,
         draw
     }
@@ -71,69 +156,104 @@ contract dMatch {
 
     uint256 public bet = 0;
 
-    constructor() public {
+    constructor(
+    dWaria _parent, 
+    dWart _token,
+    dWarrior _warrior,
+    dStage _stage,
+    uint256 _bet) public {
+        parent = _parent;
+        token = _token;
+        stage = _stage;
         state = State.pendingOponent;
+        bet = _bet;
+        _initPlayer1(_warrior);
     }
 
-    function() payable {
-        play();
-    }
+    function() external {}
 
-    /*
-    * @dev Sets the bet for the dMatch between a player1 and player2
-    * The dMatch creator is not neccesarily the player1
-    */
-    function play() payable public {
-        require(state == State.pendingOponent);
-        require(player1 != msg.sender);
-
+    function _initPlayer(dWarrior _warrior) pendingOponent internal {
+        players[msg.sender].warrior = _warrior;
         players[msg.sender].damage = 0;
         players[msg.sender].points = 0;
+    }
 
-        if (player1 == address(0)) {
-            player1 = msg.sender;
-            bet = bet.add(msg.value);
-        }
-        
-        if (player2 == address(0)) {
-            require(msg.value == bet);
-            player2 = msg.sender;
-            bet = bet.add(msg.value);
-            state = State.pendingWinnner;
-        }
+    function _initPlayer1(dWarrior _warrior) pendingOponent internal {
+        require(player1 != msg.sender);
+        player1 = msg.sender;
+        token.transferFrom(msg.sender, address(this), bet);
+        _initPlayer(_warrior);
+    }
+    
+    function initPlayer2(dWarrior _warrior) pendingOponent public {
+        require(player2 == address(0));
+        require(token.balanceOf(msg.sender) >= bet);
+        player2 = msg.sender;
+        bet = bet.add(bet);
+        token.transferFrom(msg.sender, address(this), bet);
+        _initPlayer(_warrior);
+        state = State.pendingWinner;
     }
 
     /*
     * @dev Starts the fight
     * This method must be called only by the official dWaria contract reference
+    * Both players must be ready to fight
+    * Ready means their connection is stable and the websockets are plugged in and listening
     */
-    function fight() onlyDWaria public {
-        require(state == State.pendingWinnner);
+    function fight() onlyDWaria, pendingWinner public {
+        round = round.add(1);
     }
 
-    function setResult(address _winner, address _loser) onlyDWaria public {
-        require(state == State.pendingWinnner);
+    function endRound(
+    uint256 player1Damage,
+    uint256 player1Points,
+    uint256 player2Damage,
+    uint256 player2Points
+    ) onlyDWaria, pendingWinner public {
+        require(player1Damage >= 0 && player1Points >= 0);
+        require(player2Damage >= 0 && player2Points >= 0);
+
+        players[player1].damage = player1Damage;
+        players[player1].points = player1Points;
+        players[player2].damage = player2Damage;
+        players[player2].points = player2Points;
+
+        if () 
+        rounds[round].winner = _winner;
+        rounds[round].loser = _loser;
+    }
+
+    function setResult(address _winner, address _loser) onlyDWaria, pendingWinner public {
+        require(_winner == player1 || _loser == player1);
+        require(_winner == player2 || _loser == player2);
 
         winner = _winner;
         loser = _loser;
 
-        state = State.
+        // state = State.
     }
 
     /*
     * @dev The winner may call this method to retrieve the bet funds
     * If a dMatch is marked as "draw", then the bet is sent back equally
     */
-    function withdrawBet() payable public {
-        require(state == State.won || state == State.draw);
+    function withdraw() public {
+        require(state == State.pendingOponent || state == State.won || state == State.draw);
         require(msg.sender == player1 || msg.sender == player2);
 
+        if (state == State.pendingOponent) {
+            require(msg.sender == player1);
+            token.transfer(player1, bet);
+        }
+
         if (state == State.won) {
-            // send the whole bet to the winner
+            token.transfer(winner, bet);
         }
         
         if (state == State.draw) {
-            // send the bet eqaully to both players
+            token.transfer(player1, bet.div(2));
+            token.transfer(player2, bet.div(2));
         }
     }
 }
@@ -143,128 +263,154 @@ contract dWarriorInterface {
     /*
     * @dev Causes the actual damage to the oponent
     */
-    function hit(uint256 _damage) internal {}
+    function hit(uint256 _damage) internal;
 
     /*
     * @dev the dWarrior just stands there
     */
-    function wait() public {}
+    function wait() public;
+    
+    /*
+    * @dev the dWarrior distinctive salute
+    */
+    function salute() public;
 
     /*
     * @dev These methods in combination with directional actions cause damage to the oponent
     * ONLY if the oponent is hit
     */
-    function kick() public {}
-    function lowerKick() public {}
-    function upperKick() public {} 
-    function punch() public {}
-    function lowerPunch() public {}
-    function upperPunch() public {}
+    function kick() public;
+    function lowerKick() public;
+    function upperKick() public; 
+    function punch() public;
+    function lowerPunch() public;
+    function upperPunch() public;
 
     /*
     * @dev combos and powers
     */
-    function punchCombo() public {}
-    function kickCombo() public {}
-    function powerCombo() public {}
-    function distancePower() public {}
+    function punchCombo() public;
+    function kickCombo() public;
+    
+    /*
+    * @dev a power combo happens on a tripple jump grab with kick and punch
+    */
+    function powerCombo() public;
+
+    /*
+    * @dev a distance power happens on walk backwards + kick + punch
+    */
+    function distancePower() public;
 
     /*
     * @dev shields
     * Ways that the dWarrior can protect from the oponent attack
     * Being hit by the oponent while shielding causes half the damage
     */
-    function shield() public {}
-    function lowerShield() public {}
-    function upperShield() public {}
+    function shield() public;
+    function lowerShield() public;
+    function upperShield() public;
     
     /*
     * @dev directional actions cause no damage because they don't "hit()"
     */
-    function grab() public {}
-    function grabFromBack() public {}
-    function jump() public {}
-    function doubleJump() public {}
-    function trippleJump() public {}
-    function dock() public {}
-    function walk() public {}
-    function walkBackwards() public {}
-    function run() public {}
-    function turnLeft() public {}
-    function turnRight() public {}
+    function grab() public;
+    function grabFromBack() public;
+    function jump() public;
+    function doubleJump() public;
+    function trippleJump() public;
+    function dock() public;
+    function walk() public;
+    function walkBackwards() public;
+    function run() public;
+    function turnLeft() public;
+    function turnRight() public;
     
     /*
     * @dev dWarrior action combinations cause the sum of the base damage
     */
 
     // Punches
-    function grabAndPunch() public {}
-    function grabFromBackAndPunch() public {}
-    function dockAndPunch() public {}
-    function jumpAndPunch() public {}
-    function doubleJumpAndPunch() public {}
-    function trippleJumpAndPunch() public {}
-    function jumpAndUpperPunch() public {}
-    function doubleJumpAndUpperPunch() public {}
-    function trippleJumpAndUpperPunch() public {}
-    function jumpAndLowerPunch() public {}
-    function doubleJumpAndLowerPunch() public {}
-    function trippleJumpAndLowerPunch() public {}
-    function walkAndPunch() public {}
-    function walkBackwardsAndPunch() public {}
-    function runAndPunch() public {}
-    function walkAndUpperPunch() public {}
-    function walkBackwardsAndUpperPunch() public {}
-    function runAndUpperPunch() public {}
-    function walkAndLowerPunch() public {}
-    function walkBackwardsAndLowerPunch() public {}
-    function runAndLowerPunch() public {}
-    function turnLeftAndPunch() public {}
-    function turnRightAndPunch() public {}
+    function grabAndPunch() public;
+    function grabFromBackAndPunch() public;
+    function dockAndPunch() public;
+    function jumpAndPunch() public;
+    function doubleJumpAndPunch() public;
+    function trippleJumpAndPunch() public;
+    function jumpAndUpperPunch() public;
+    function doubleJumpAndUpperPunch() public;
+    function trippleJumpAndUpperPunch() public;
+    function jumpAndLowerPunch() public;
+    function doubleJumpAndLowerPunch() public;
+    function trippleJumpAndLowerPunch() public;
+    function walkAndPunch() public;
+    function walkBackwardsAndPunch() public;
+    function runAndPunch() public;
+    function walkAndUpperPunch() public;
+    function walkBackwardsAndUpperPunch() public;
+    function runAndUpperPunch() public;
+    function walkAndLowerPunch() public;
+    function walkBackwardsAndLowerPunch() public;
+    function runAndLowerPunch() public;
+    function turnLeftAndPunch() public;
+    function turnRightAndPunch() public;
 
     // Kicks
-    function grabAndKick() public {}
-    function grabFromBackAndKick() public {}
-    function dockAndKick() public {}
-    function jumpAndKick() public {}
-    function doubleJumpAndKick() public {}
-    function trippleJumpAndKick() public {}
-    function jumpAndUpperKick() public {}
-    function doubleJumpAndUpperKick() public {}
-    function trippleJumpAndUpperKick() public {}
-    function jumpAndLowerKick() public {}
-    function doubleJumpAndLowerKick() public {}
-    function trippleJumpAndLowerKick() public {}
-    function walkAndKick() public {}
-    function walkBackwardsAndKick() public {}
-    function runAndKick() public {}
-    function walkAndUpperKick() public {}
-    function walkBackwardsAndUpperKick() public {}
-    function runAndUpperKick() public {}
-    function walkAndLowerKick() public {}
-    function walkBackwardsAndLowerKick() public {}
-    function runAndLowerKick() public {}
-    function turnLeftAndKick() public {}
-    function turnRightAndKick() public {}
+    function grabAndKick() public;
+    function grabFromBackAndKick() public;
+    function dockAndKick() public;
+    function jumpAndKick() public;
+    function doubleJumpAndKick() public;
+    function trippleJumpAndKick() public;
+    function jumpAndUpperKick() public;
+    function doubleJumpAndUpperKick() public;
+    function trippleJumpAndUpperKick() public;
+    function jumpAndLowerKick() public;
+    function doubleJumpAndLowerKick() public;
+    function trippleJumpAndLowerKick() public;
+    function walkAndKick() public;
+    function walkBackwardsAndKick() public;
+    function runAndKick() public;
+    function walkAndUpperKick() public;
+    function walkBackwardsAndUpperKick() public;
+    function runAndUpperKick() public;
+    function walkAndLowerKick() public;
+    function walkBackwardsAndLowerKick() public;
+    function runAndLowerKick() public;
+    function turnLeftAndKick() public;
+    function turnRightAndKick() public;
+
+    function jumpGrabAndPunch() public;
+    function doubleJumpGrabAndPunch() public;
+    function trippleJumpGrabAndPunch() public;
+    function jumpGrabAndKick() public;
+    function doubleJumpGrabAndKick() public;
+    function trippleJumpGrabAndKick() public;
+
 
     /*
     * @dev dWarrior states
     * These states represent the actions of the dWarrior when is hit by the oponent
     * These methods cause the actual damage to the player after hit by the oponent
     */
-    function onIsPunched() internal {}
-    function onIsLowerPunched() internal {}
-    function onIsUpperPunched() internal {}
-    function onIsKicked() internal {}
-    function onIsLowerKicked() internal {}
-    function onIsUpperKicked() internal {}
+    function onIsPunched() internal;
+    function onIsLowerPunched() internal;
+    function onIsUpperPunched() internal;
+    function onIsKicked() internal;
+    function onIsLowerKicked() internal;
+    function onIsUpperKicked() internal;
     
-    function onIsGrabbedAndPunched() internal {}
-    function onIsGrabbedAndLowerPunched() internal {}
-    function onIsGrabbedAndUpperPunched() internal {}
-    function onIsGrabbedAndKicked() internal {}
-    function onIsGrabbedAndLowerKicked() internal {}
-    function onIsGrabbedAndUpperKicked() internal {}
+    function onIsGrabbedAndPunched() internal;
+    function onIsGrabbedAndLowerPunched() internal;
+    function onIsGrabbedAndUpperPunched() internal;
+    function onIsGrabbedAndKicked() internal;
+    function onIsGrabbedAndLowerKicked() internal;
+    function onIsGrabbedAndUpperKicked() internal;
+
+    /*
+    @dev a face smash happens when grabbed from a tripple jump
+    */
+    function onIsFaceSmashed() internal;
 }
 
 /*
@@ -274,16 +420,25 @@ contract dWarriorInterface {
 */
 contract dWarrior is dWarriorInterface {
 
-    use SafeMath for uint256;
+    using SafeMath for uint256;
+
+    dWart public token;
 
     address public creator;
     string public name;
     string public bio;
 
     uint256 public amountRaised = 0;
-    uint256 public price = 100 finney;
+    uint256 public price = 1;
     uint256 public fights = 0;
     uint256 public fightsThreshold = 15;
+
+    /*
+    * @dev Initial life means that the warrior can take
+    * 3 upper kicks, 3 upper punches, 3 distance powers, 1 power combo and any damage in between
+    * before lossing the round
+    */
+    uint256 public life = 31;
 
     /*
     * @dev damage caused by the dWarrior
@@ -309,27 +464,89 @@ contract dWarrior is dWarriorInterface {
     uint256 public powerCombo = 5;
     uint256 public distancePower = 3;
   
-    constructor(string _name, string _bio) public {
+    constructor(
+    dWart _token,
+    string _name, 
+    string _bio
+    ) public {
         creator = msg.sender;
         name = _name;
         bio = _bio;
+        token = _token;
     }
 
-    function() payable {
-        fight();
+    function() external {
+        select();
     }
 
     /*
-    * @dev a Player chooses this dWarrior for a Match
+    * @dev a Player selects this dWarrior for a Match
+    * Whenever the fights threshold is reached, the price of selecting the warrior increases + 1
+    * as well as the life + 5
     */
-    function fight() payable public {
-        require(msg.value == price);
-        amountRaised = amountRaised.add(msg.value);
-        creator.transfer(msg.value);
+    function select() public {
+        require(token.balanceOf(msg.sender) >= price);
+        token.transferFrom(msg.sender, creator, price);
+        amountRaised = amountRaised.add(price);
         fights = fights.add(1);
-        
         if (fights % fightsThreshold == 0) {
-            price = price.add(100 finney);
+            price = price.add(1);
+            life = life.add(5);
         }
     }
+}
+
+contract dStage {
+
+    using SafeMath for uint256;
+
+    dWart public token;
+
+    address public creator;
+    string public name;
+    string public shortStory;
+
+    uint256 public amountRaised = 0;
+    uint256 public price = 1;
+    uint256 public fights = 0;
+    uint256 public fightsThreshold = 15;
+
+    constructor(
+    dWart _token,
+    string _name, 
+    string _shortStory
+    ) public {
+        creator = msg.sender;
+        name = _name;
+        shortStory = _shortStory;
+        token = _token;
+    }
+
+    function() external {
+        select();
+    }
+
+    /*
+    * @dev a Player selects this dWarrior for a Match
+    */
+    function select() public {
+        require(token.balanceOf(msg.sender) >= price);
+        token.transferFrom(msg.sender, creator, price);
+        amountRaised = amountRaised.add(price);
+        fights = fights.add(1);
+        if (fights % fightsThreshold == 0) {
+            price = price.add(1);
+        }
+    }
+
+    // left
+    // center
+    // right
+
+    // roof
+    // floor
+    
+    // higherground
+    // underground
+
 }

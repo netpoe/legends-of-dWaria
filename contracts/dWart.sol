@@ -5,7 +5,7 @@ import '../node_modules/openzeppelin-solidity/contracts/token/ERC20/DetailedERC2
 
 contract dWart is StandardToken, DetailedERC20 {
     constructor ()
-    public DetailedERC20 ('dWart Token', 'dWT', 18) {
+    public DetailedERC20 ('dWart Token', 'dWART', 18) {
         uint256 supply = 21000000 * 1 ether;
         totalSupply_ = supply;
         balances[msg.sender] = supply;
